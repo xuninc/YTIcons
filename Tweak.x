@@ -7,13 +7,40 @@
 #define TweakName @"YTIcons"
 
 static const NSInteger YTIconsSection = 'ytic';
-static NSInteger ytIconsRangeStart = 0;
-static const NSInteger kRangeSize = 100;
-static const NSInteger kMaxIcons = 1500;
+static NSString *ytIconsSearchQuery = nil;
 
 @interface YTSettingsSectionItemManager (Tweak)
 - (void)updateYTIconsSectionWithEntry:(id)entry;
 @end
+
+%hook YTSettingsViewController
+
+- (void)loadWithModel:(id)model fromView:(UIView *)view {
+    %orig;
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection)
+        [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        ytIconsSearchQuery = searchText.length > 0 ? searchText : nil;
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+        return;
+    }
+    %orig;
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        ytIconsSearchQuery = nil;
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+    }
+    %orig;
+}
+
+%end
 
 %hook YTAppSettingsPresentationData
 
@@ -34,58 +61,7 @@ static const NSInteger kMaxIcons = 1500;
     Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
     YTSettingsViewController *settingsViewController = [self valueForKey:@"_settingsViewControllerDelegate"];
 
-    // Navigation row
-    NSInteger rangeEnd = MIN(ytIconsRangeStart + kRangeSize, kMaxIcons);
-    NSString *navTitle = [NSString stringWithFormat:@"Showing %ld - %ld  (Tap to change range)", (long)ytIconsRangeStart, (long)rangeEnd - 1];
-
-    __block __weak YTSettingsSectionItemManager *weakSelf = self;
-    YTSettingsSectionItem *navItem = [YTSettingsSectionItemClass itemWithTitle:navTitle
-        accessibilityIdentifier:nil
-        detailTextBlock:nil
-        selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Jump to range"
-                message:[NSString stringWithFormat:@"Enter start number (0-%ld)", (long)kMaxIcons - 1]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-                tf.keyboardType = UIKeyboardTypeNumberPad;
-                tf.placeholder = [NSString stringWithFormat:@"%ld", (long)ytIconsRangeStart];
-            }];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Go" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                NSInteger val = [alert.textFields.firstObject.text integerValue];
-                ytIconsRangeStart = MAX(0, MIN(val, kMaxIcons - kRangeSize));
-                [weakSelf updateYTIconsSectionWithEntry:nil];
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [settingsViewController presentViewController:alert animated:YES completion:nil];
-            return YES;
-        }];
-    [sectionItems addObject:navItem];
-
-    // Prev/Next row
-    if (ytIconsRangeStart > 0 || rangeEnd < kMaxIcons) {
-        NSMutableString *pnTitle = [NSMutableString string];
-        if (ytIconsRangeStart > 0) [pnTitle appendString:@"◀ Previous"];
-        if (ytIconsRangeStart > 0 && rangeEnd < kMaxIcons) [pnTitle appendString:@"   |   "];
-        if (rangeEnd < kMaxIcons) [pnTitle appendString:@"Next ▶"];
-
-        YTSettingsSectionItem *pnItem = [YTSettingsSectionItemClass itemWithTitle:pnTitle
-            accessibilityIdentifier:nil
-            detailTextBlock:nil
-            selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
-                // Toggle between prev and next — if at start go next, at end go prev, otherwise go next
-                if (rangeEnd >= kMaxIcons) {
-                    ytIconsRangeStart = MAX(0, ytIconsRangeStart - kRangeSize);
-                } else {
-                    ytIconsRangeStart = MIN(kMaxIcons - kRangeSize, ytIconsRangeStart + kRangeSize);
-                }
-                [weakSelf updateYTIconsSectionWithEntry:nil];
-                return YES;
-            }];
-        [sectionItems addObject:pnItem];
-    }
-
-    // Icon rows
-    for (NSInteger i = ytIconsRangeStart; i < rangeEnd; ++i) {
+    for (NSInteger i = 0; i < 1500; ++i) {
         @try {
             YTIIcon *icon = [%c(YTIIcon) new];
             icon.iconType = i;
@@ -94,6 +70,12 @@ static const NSInteger kMaxIcons = 1500;
             if (range.location != NSNotFound)
                 iconDescription = [iconDescription substringFromIndex:range.location + range.length];
             NSString *title = [NSString stringWithFormat:@"%ld - %@", (long)i, iconDescription];
+
+            if (ytIconsSearchQuery) {
+                if ([title rangeOfString:ytIconsSearchQuery options:NSCaseInsensitiveSearch].location == NSNotFound)
+                    continue;
+            }
+
             YTSettingsSectionItem *option = [YTSettingsSectionItemClass itemWithTitle:title
                 accessibilityIdentifier:nil
                 detailTextBlock:NULL
