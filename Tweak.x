@@ -8,6 +8,7 @@
 #define TweakName @"YTIcons"
 
 static const NSInteger YTIconsSection = 'ytic';
+static NSString *ytIconsSearchQuery = nil;
 
 @interface YTSettingsSectionItemManager (Tweak)
 - (void)updateYTIconsSectionWithEntry:(id)entry;
@@ -19,6 +20,15 @@ static const NSInteger YTIconsSection = 'ytic';
     %orig;
     if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection)
         [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
+}
+
+- (void)searchBarTextDidChange:(id)searchBar text:(NSString *)text {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        ytIconsSearchQuery = text.length > 0 ? text : nil;
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+    }
+    %orig;
 }
 
 %end
@@ -51,6 +61,12 @@ static const NSInteger YTIconsSection = 'ytic';
             if (range.location != NSNotFound)
                 iconDescription = [iconDescription substringFromIndex:range.location + range.length];
             NSString *title = [NSString stringWithFormat:@"Option %ld - %@", (long)i, iconDescription];
+
+            if (ytIconsSearchQuery) {
+                if ([title rangeOfString:ytIconsSearchQuery options:NSCaseInsensitiveSearch].location == NSNotFound)
+                    continue;
+            }
+
             YTSettingsSectionItem *option = [YTSettingsSectionItemClass itemWithTitle:title
                 accessibilityIdentifier:nil
                 detailTextBlock:NULL
