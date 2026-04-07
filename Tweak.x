@@ -13,6 +13,49 @@ static NSString *ytIconsSearchQuery = nil;
 - (void)updateYTIconsSectionWithEntry:(id)entry;
 @end
 
+%hook YTSettingsViewController
+
+- (void)loadWithModel:(id)model fromView:(UIView *)view {
+    %orig;
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection)
+        [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
+}
+
+// Let YouTube handle search first, then re-inject our filtered items
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        ytIconsSearchQuery = searchText.length > 0 ? searchText : nil;
+        %orig;
+        // Re-inject after YouTube clears our section
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+        return;
+    }
+    %orig;
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        ytIconsSearchQuery = nil;
+        %orig;
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+        return;
+    }
+    %orig;
+}
+
+// Also catch the search bar's begin/end editing to handle edge cases
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+        [searchBar resignFirstResponder];
+        return;
+    }
+    %orig;
+}
+
+%end
+
 %hook YTAppSettingsPresentationData
 
 + (NSArray <NSNumber *> *)settingsCategoryOrder {
@@ -31,47 +74,6 @@ static NSString *ytIconsSearchQuery = nil;
     NSMutableArray *sectionItems = [NSMutableArray array];
     Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
     YTSettingsViewController *settingsViewController = [self valueForKey:@"_settingsViewControllerDelegate"];
-    __weak YTSettingsSectionItemManager *weakSelf = self;
-
-    // Search row
-    NSString *searchTitle = ytIconsSearchQuery
-        ? [NSString stringWithFormat:@"🔍 \"%@\" — Tap to change", ytIconsSearchQuery]
-        : @"🔍 Search Icons";
-
-    YTSettingsSectionItem *searchItem = [YTSettingsSectionItemClass itemWithTitle:searchTitle
-        accessibilityIdentifier:nil
-        detailTextBlock:^NSString *() {
-            return ytIconsSearchQuery ? @"Clear ✕" : nil;
-        }
-        selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Search Icons"
-                message:@"Search by name or number"
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-                tf.placeholder = @"e.g. HISTORY or 59";
-                tf.text = ytIconsSearchQuery;
-                tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
-                tf.clearButtonMode = UITextFieldViewModeAlways;
-            }];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Search" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                NSString *query = alert.textFields.firstObject.text;
-                ytIconsSearchQuery = query.length > 0 ? query : nil;
-                [weakSelf updateYTIconsSectionWithEntry:nil];
-            }]];
-            if (ytIconsSearchQuery) {
-                [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-                    ytIconsSearchQuery = nil;
-                    [weakSelf updateYTIconsSectionWithEntry:nil];
-                }]];
-            }
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [settingsViewController presentViewController:alert animated:YES completion:nil];
-            return YES;
-        }];
-    [sectionItems addObject:searchItem];
-
-    // Count matches for feedback
-    NSInteger matchCount = 0;
 
     for (NSInteger i = 0; i < 1500; ++i) {
         @try {
@@ -88,15 +90,15 @@ static NSString *ytIconsSearchQuery = nil;
                     continue;
             }
 
-            matchCount++;
-
             YTSettingsSectionItem *option = [YTSettingsSectionItemClass itemWithTitle:title
                 accessibilityIdentifier:nil
                 detailTextBlock:NULL
                 selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
                     UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"%ld", (long)i];
-                    [[%c(GOOHUDManagerInternal) sharedInstance] showMessageMainThread:
-                        [%c(YTHUDMessage) messageWithText:[NSString stringWithFormat:@"Copied: %ld", (long)i]]];
+                    @try {
+                        [[%c(GOOHUDManagerInternal) sharedInstance] showMessageMainThread:
+                            [%c(YTHUDMessage) messageWithText:[NSString stringWithFormat:@"Copied: %ld", (long)i]]];
+                    } @catch (id ex) {}
                     return YES;
                 }];
             option.settingIcon = icon;
@@ -104,8 +106,7 @@ static NSString *ytIconsSearchQuery = nil;
         } @catch (id ex) {}
     }
 
-    // Update search row with count if searching
-    if (ytIconsSearchQuery && matchCount == 0) {
+    if (ytIconsSearchQuery && sectionItems.count == 0) {
         YTSettingsSectionItem *noResults = [YTSettingsSectionItemClass itemWithTitle:@"No matching icons found"
             accessibilityIdentifier:nil detailTextBlock:nil selectBlock:nil];
         [sectionItems addObject:noResults];
