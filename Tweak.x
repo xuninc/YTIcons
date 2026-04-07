@@ -8,27 +8,68 @@
 
 static const NSInteger YTIconsSection = 'ytic';
 static NSString *ytIconsSearchQuery = nil;
+static __weak UISearchBar *ytIconsSearchBar = nil;
 
 @interface YTSettingsSectionItemManager (Tweak)
 - (void)updateYTIconsSectionWithEntry:(id)entry;
 @end
 
+// Find UISearchBar in a view hierarchy
+static UISearchBar *findSearchBar(UIView *view) {
+    if ([view isKindOfClass:[UISearchBar class]]) return (UISearchBar *)view;
+    for (UIView *subview in view.subviews) {
+        UISearchBar *found = findSearchBar(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
 %hook YTSettingsViewController
 
 - (void)loadWithModel:(id)model fromView:(UIView *)view {
     %orig;
-    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection)
-        [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
+    @try {
+        if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
+            [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
+
+            // Find the search bar after layout and monitor it directly
+            __weak YTSettingsViewController *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (!weakSelf) return;
+                UISearchBar *bar = findSearchBar(weakSelf.view);
+                if (bar) {
+                    ytIconsSearchBar = bar;
+                    // Add target to the search bar's text field for direct monitoring
+                    UITextField *tf = [bar valueForKey:@"searchField"];
+                    if (tf) {
+                        [tf addTarget:weakSelf action:@selector(yticons_searchTextChanged:) forControlEvents:UIControlEventEditingChanged];
+                    }
+                }
+            });
+        }
+    } @catch (id ex) {}
 }
 
-// Let YouTube handle search first, then re-inject our filtered items
+// Direct text field monitoring — works regardless of YouTube's delegate chain
+%new
+- (void)yticons_searchTextChanged:(UITextField *)textField {
+    NSString *text = textField.text;
+    ytIconsSearchQuery = text.length > 0 ? text : nil;
+    @try {
+        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+        [manager updateYTIconsSectionWithEntry:nil];
+    } @catch (id ex) {}
+}
+
+// Also hook delegate methods as backup
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
     if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
         ytIconsSearchQuery = searchText.length > 0 ? searchText : nil;
         %orig;
-        // Re-inject after YouTube clears our section
-        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
-        [manager updateYTIconsSectionWithEntry:nil];
+        @try {
+            YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+            [manager updateYTIconsSectionWithEntry:nil];
+        } @catch (id ex) {}
         return;
     }
     %orig;
@@ -38,17 +79,10 @@ static NSString *ytIconsSearchQuery = nil;
     if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
         ytIconsSearchQuery = nil;
         %orig;
-        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
-        [manager updateYTIconsSectionWithEntry:nil];
-        return;
-    }
-    %orig;
-}
-
-// Also catch the search bar's begin/end editing to handle edge cases
-- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
-    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
-        [searchBar resignFirstResponder];
+        @try {
+            YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
+            [manager updateYTIconsSectionWithEntry:nil];
+        } @catch (id ex) {}
         return;
     }
     %orig;
