@@ -1,3 +1,4 @@
+#import <objc/runtime.h>
 #import <YouTubeHeader/YTSettingsPickerViewController.h>
 #import <YouTubeHeader/YTSettingsViewController.h>
 #import <YouTubeHeader/YTSettingsSectionItem.h>
@@ -130,8 +131,9 @@ static UISearchBar *findSearchBar(UIView *view) {
                 selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
                     UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"%ld", (long)i];
                     @try {
-                        [[%c(GOOHUDManagerInternal) sharedInstance] showMessageMainThread:
-                            [%c(YTHUDMessage) messageWithText:[NSString stringWithFormat:@"Copied: %ld", (long)i]]];
+                        id hudManager = [objc_getClass("GOOHUDManagerInternal") performSelector:@selector(sharedInstance)];
+                        id message = [objc_getClass("YTHUDMessage") performSelector:@selector(messageWithText:) withObject:[NSString stringWithFormat:@"Copied: %ld", (long)i]];
+                        [hudManager performSelector:@selector(showMessageMainThread:) withObject:message];
                     } @catch (id ex) {}
                     return YES;
                 }];
