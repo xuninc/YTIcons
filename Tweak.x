@@ -8,150 +8,203 @@
 #define TweakName @"YTIcons"
 
 static const NSInteger YTIconsSection = 'ytic';
-static NSString *ytIconsSearchQuery = nil;
-static __weak UISearchBar *ytIconsSearchBar = nil;
+
+#pragma mark - Icon catalog
+
+@interface YTIconSearchEntry : NSObject
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *searchText;
+@property (nonatomic, assign) NSInteger iconType;
+@property (nonatomic, strong) id icon;
+@end
+@implementation YTIconSearchEntry
+@end
+
+static NSArray<YTIconSearchEntry *> *YTIconsAllEntries(void) {
+    static NSArray *cached;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:1500];
+        Class IconCls = objc_getClass("YTIIcon");
+        for (NSInteger i = 0; i < 1500; ++i) {
+            @try {
+                id icon = [IconCls new];
+                [icon setValue:@(i) forKey:@"iconType"];
+                NSString *desc = [icon description];
+                NSRange r = [desc rangeOfString:@"icon_type: "];
+                if (r.location != NSNotFound) desc = [desc substringFromIndex:r.location + r.length];
+                NSString *title = [NSString stringWithFormat:@"%ld - %@", (long)i, desc];
+                YTIconSearchEntry *e = [YTIconSearchEntry new];
+                e.title = title;
+                e.searchText = title.lowercaseString;
+                e.iconType = i;
+                e.icon = icon;
+                [out addObject:e];
+            } @catch (id ex) {}
+        }
+        cached = out.copy;
+    });
+    return cached;
+}
+
+static void YTIconsCopyType(NSInteger iconType) {
+    UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"%ld", (long)iconType];
+    @try {
+        id hudManager = [objc_getClass("GOOHUDManagerInternal") performSelector:@selector(sharedInstance)];
+        id message = [objc_getClass("YTHUDMessage") performSelector:@selector(messageWithText:) withObject:[NSString stringWithFormat:@"Copied: %ld", (long)iconType]];
+        [hudManager performSelector:@selector(showMessageMainThread:) withObject:message];
+    } @catch (id ex) {}
+}
+
+#pragma mark - Search controller
+
+@interface YTIconsSearchController : UITableViewController <UISearchResultsUpdating>
+@property (nonatomic, strong) UISearchController *search;
+@property (nonatomic, copy) NSArray<YTIconSearchEntry *> *filtered;
+@end
+
+@implementation YTIconsSearchController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStylePlain];
+    if (self) {
+        self.title = @"Search Icons";
+        self.filtered = @[];
+        self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
+        self.search.searchResultsUpdater = self;
+        self.search.obscuresBackgroundDuringPresentation = NO;
+        self.search.hidesNavigationBarDuringPresentation = NO;
+        self.search.searchBar.placeholder = @"Search icon types";
+        self.navigationItem.searchController = self.search;
+        self.navigationItem.hidesSearchBarWhenScrolling = NO;
+        self.definesPresentationContext = YES;
+    }
+    return self;
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self.search.searchBar becomeFirstResponder];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)sc {
+    NSString *q = sc.searchBar.text.lowercaseString;
+    if (q.length == 0) {
+        self.filtered = @[];
+    } else {
+        NSArray<NSString *> *tokens = [q componentsSeparatedByString:@" "];
+        NSMutableArray *out = [NSMutableArray array];
+        for (YTIconSearchEntry *e in YTIconsAllEntries()) {
+            BOOL ok = YES;
+            for (NSString *t in tokens) {
+                if (t.length == 0) continue;
+                if ([e.searchText rangeOfString:t].location == NSNotFound) { ok = NO; break; }
+            }
+            if (ok) [out addObject:e];
+        }
+        self.filtered = out.copy;
+    }
+    [self.tableView reloadData];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return self.filtered.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *kID = @"YTIconSearchCell";
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:kID];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kID];
+    YTIconSearchEntry *e = self.filtered[ip.row];
+    cell.textLabel.text = e.title;
+    cell.textLabel.numberOfLines = 0;
+    cell.textLabel.adjustsFontSizeToFitWidth = YES;
+    cell.textLabel.minimumScaleFactor = 0.7;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    YTIconSearchEntry *e = self.filtered[ip.row];
+    YTIconsCopyType(e.iconType);
+    [tv deselectRowAtIndexPath:ip animated:YES];
+}
+
+@end
+
+#pragma mark - Section registration
 
 @interface YTSettingsSectionItemManager (Tweak)
 - (void)updateYTIconsSectionWithEntry:(id)entry;
 @end
 
-// Find UISearchBar in a view hierarchy
-static UISearchBar *findSearchBar(UIView *view) {
-    if ([view isKindOfClass:[UISearchBar class]]) return (UISearchBar *)view;
-    for (UIView *subview in view.subviews) {
-        UISearchBar *found = findSearchBar(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
-%hook YTSettingsViewController
-
-- (void)loadWithModel:(id)model fromView:(UIView *)view {
-    %orig;
-    @try {
-        if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
-            [self setValue:@(YES) forKey:@"_shouldShowSearchBar"];
-
-            // Find the search bar after layout and monitor it directly
-            __weak YTSettingsViewController *weakSelf = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!weakSelf) return;
-                UISearchBar *bar = findSearchBar(weakSelf.view);
-                if (bar) {
-                    ytIconsSearchBar = bar;
-                    // Add target to the search bar's text field for direct monitoring
-                    UITextField *tf = [bar valueForKey:@"searchField"];
-                    if (tf) {
-                        [tf addTarget:weakSelf action:@selector(yticons_searchTextChanged:) forControlEvents:UIControlEventEditingChanged];
-                    }
-                }
-            });
-        }
-    } @catch (id ex) {}
-}
-
-// Direct text field monitoring — works regardless of YouTube's delegate chain
-%new
-- (void)yticons_searchTextChanged:(UITextField *)textField {
-    NSString *text = textField.text;
-    ytIconsSearchQuery = text.length > 0 ? text : nil;
-    @try {
-        YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
-        [manager updateYTIconsSectionWithEntry:nil];
-    } @catch (id ex) {}
-}
-
-// Also hook delegate methods as backup
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
-    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
-        ytIconsSearchQuery = searchText.length > 0 ? searchText : nil;
-        %orig;
-        @try {
-            YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
-            [manager updateYTIconsSectionWithEntry:nil];
-        } @catch (id ex) {}
-        return;
-    }
-    %orig;
-}
-
-- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
-    if ([[self valueForKey:@"_detailsCategoryID"] integerValue] == YTIconsSection) {
-        ytIconsSearchQuery = nil;
-        %orig;
-        @try {
-            YTSettingsSectionItemManager *manager = [self valueForKey:@"_sectionItemManager"];
-            [manager updateYTIconsSectionWithEntry:nil];
-        } @catch (id ex) {}
-        return;
-    }
-    %orig;
-}
-
-%end
-
 %hook YTAppSettingsPresentationData
-
-+ (NSArray <NSNumber *> *)settingsCategoryOrder {
-    NSArray <NSNumber *> *order = %orig;
-    NSMutableArray <NSNumber *> *mutableOrder = [order mutableCopy];
-    [mutableOrder insertObject:@(YTIconsSection) atIndex:0];
-    return mutableOrder.copy;
++ (NSArray<NSNumber *> *)settingsCategoryOrder {
+    NSMutableArray<NSNumber *> *m = [%orig mutableCopy];
+    [m insertObject:@(YTIconsSection) atIndex:0];
+    return m.copy;
 }
-
 %end
 
 %hook YTSettingsSectionItemManager
 
 %new(v@:@)
 - (void)updateYTIconsSectionWithEntry:(id)entry {
-    NSMutableArray *sectionItems = [NSMutableArray array];
-    Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
-    YTSettingsViewController *settingsViewController = [self valueForKey:@"_settingsViewControllerDelegate"];
+    NSMutableArray *items = [NSMutableArray array];
+    Class ItemCls = %c(YTSettingsSectionItem);
+    YTSettingsViewController *settingsVC = [self valueForKey:@"_settingsViewControllerDelegate"];
 
-    for (NSInteger i = 0; i < 1500; ++i) {
-        @try {
-            YTIIcon *icon = [%c(YTIIcon) new];
-            icon.iconType = i;
-            NSString *iconDescription = [icon description];
-            NSRange range = [iconDescription rangeOfString:@"icon_type: "];
-            if (range.location != NSNotFound)
-                iconDescription = [iconDescription substringFromIndex:range.location + range.length];
-            NSString *title = [NSString stringWithFormat:@"%ld - %@", (long)i, iconDescription];
-
-            if (ytIconsSearchQuery) {
-                if ([title rangeOfString:ytIconsSearchQuery options:NSCaseInsensitiveSearch].location == NSNotFound)
-                    continue;
+    YTSettingsSectionItem *searchRow = nil;
+    if ([ItemCls respondsToSelector:@selector(itemWithTitle:titleDescription:accessibilityIdentifier:detailTextBlock:selectBlock:)]) {
+        searchRow = [ItemCls itemWithTitle:@"Search Icons"
+                          titleDescription:@"Find an icon by name and copy its ID."
+                   accessibilityIdentifier:nil
+                           detailTextBlock:nil
+                               selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger arg1) {
+            YTIconsSearchController *ctrl = [YTIconsSearchController new];
+            UINavigationController *nav = settingsVC.navigationController;
+            if (nav) {
+                [nav pushViewController:ctrl animated:YES];
+            } else {
+                UINavigationController *wrap = [[UINavigationController alloc] initWithRootViewController:ctrl];
+                [settingsVC presentViewController:wrap animated:YES completion:nil];
             }
+            return YES;
+        }];
+    } else {
+        searchRow = [ItemCls itemWithTitle:@"Search Icons"
+                   accessibilityIdentifier:nil
+                           detailTextBlock:nil
+                               selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger arg1) {
+            YTIconsSearchController *ctrl = [YTIconsSearchController new];
+            UINavigationController *nav = settingsVC.navigationController;
+            if (nav) {
+                [nav pushViewController:ctrl animated:YES];
+            } else {
+                UINavigationController *wrap = [[UINavigationController alloc] initWithRootViewController:ctrl];
+                [settingsVC presentViewController:wrap animated:YES completion:nil];
+            }
+            return YES;
+        }];
+    }
+    [items addObject:searchRow];
 
-            YTSettingsSectionItem *option = [YTSettingsSectionItemClass itemWithTitle:title
-                accessibilityIdentifier:nil
-                detailTextBlock:NULL
-                selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
-                    UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"%ld", (long)i];
-                    @try {
-                        id hudManager = [objc_getClass("GOOHUDManagerInternal") performSelector:@selector(sharedInstance)];
-                        id message = [objc_getClass("YTHUDMessage") performSelector:@selector(messageWithText:) withObject:[NSString stringWithFormat:@"Copied: %ld", (long)i]];
-                        [hudManager performSelector:@selector(showMessageMainThread:) withObject:message];
-                    } @catch (id ex) {}
-                    return YES;
-                }];
-            option.settingIcon = icon;
-            [sectionItems addObject:option];
-        } @catch (id ex) {}
+    for (YTIconSearchEntry *e in YTIconsAllEntries()) {
+        NSInteger iconType = e.iconType;
+        YTSettingsSectionItem *option = [ItemCls itemWithTitle:e.title
+                                       accessibilityIdentifier:nil
+                                               detailTextBlock:NULL
+                                                   selectBlock:^BOOL(YTSettingsCell *c, NSUInteger a) {
+            YTIconsCopyType(iconType);
+            return YES;
+        }];
+        @try { [option setValue:e.icon forKey:@"settingIcon"]; } @catch (id ex) {}
+        [items addObject:option];
     }
 
-    if (ytIconsSearchQuery && sectionItems.count == 0) {
-        YTSettingsSectionItem *noResults = [YTSettingsSectionItemClass itemWithTitle:@"No matching icons found"
-            accessibilityIdentifier:nil detailTextBlock:nil selectBlock:nil];
-        [sectionItems addObject:noResults];
-    }
-
-    if ([settingsViewController respondsToSelector:@selector(setSectionItems:forCategory:title:icon:titleDescription:headerHidden:)])
-        [settingsViewController setSectionItems:sectionItems forCategory:YTIconsSection title:TweakName icon:nil titleDescription:nil headerHidden:NO];
+    if ([settingsVC respondsToSelector:@selector(setSectionItems:forCategory:title:icon:titleDescription:headerHidden:)])
+        [settingsVC setSectionItems:items forCategory:YTIconsSection title:TweakName icon:nil titleDescription:nil headerHidden:NO];
     else
-        [settingsViewController setSectionItems:sectionItems forCategory:YTIconsSection title:TweakName titleDescription:nil headerHidden:NO];
+        [settingsVC setSectionItems:items forCategory:YTIconsSection title:TweakName titleDescription:nil headerHidden:NO];
 }
 
 - (void)updateSectionForCategory:(NSUInteger)category withEntry:(id)entry {
